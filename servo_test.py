@@ -8,9 +8,17 @@ Phase 2: 5 random targets within +/- RANDOM_DEG of midrange, using
 """
 
 import random
+import sys
 import time
 
-from gpiozero import AngularServo
+# --hw selects hardware PWM (needs the dtoverlay - see hwservo.py).
+# Default is gpiozero/lgpio software PWM.
+USE_HARDWARE_PWM = "--hw" in sys.argv
+
+if USE_HARDWARE_PWM:
+    from hwservo import HardwareServo as ServoClass
+else:
+    from gpiozero import AngularServo as ServoClass
 
 # ---- servo calibration -------------------------------------------------
 PAN_PIN = 12
@@ -38,7 +46,7 @@ MID = (MIN_ANGLE + MAX_ANGLE) / 2
 
 
 def make_servo(pin):
-    return AngularServo(
+    return ServoClass(
         pin,
         min_angle=MIN_ANGLE,
         max_angle=MAX_ANGLE,
@@ -79,6 +87,8 @@ def main():
     pos = [MID, MID]
 
     try:
+        backend = "hardware PWM" if USE_HARDWARE_PWM else "software PWM (lgpio)"
+        print(f"Backend: {backend}")
         print(f"Centering at ({MID:.1f}, {MID:.1f})")
         pan.angle = tilt.angle = MID
         time.sleep(1.0)
