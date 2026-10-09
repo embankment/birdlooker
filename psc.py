@@ -60,10 +60,14 @@ class PSC:
     """
 
     def __init__(self, port="/dev/ttyUSB0", baud=BAUD_HIGH, timeout=0.5,
-                 jumper=False, debug=False):
+                 jumper=False, debug=False, stopbits=2):
         self.port = port
         self.target_baud = baud
         self.timeout = timeout
+        # Datasheet p.8 specifies "2400 N 8 2" -- TWO stop bits. pyserial
+        # defaults to one, which the PSC may reject on longer binary
+        # commands even while short ASCII ones get through.
+        self.stopbits = stopbits
         # With the channel jumper fitted, channels shift 0-15 -> 16-31.
         self.channel_offset = 16 if jumper else 0
         self.ser = None
@@ -87,8 +91,10 @@ class PSC:
         Probes both rates, because the board keeps whatever rate it was
         last set to until it is reset.
         """
-        self.ser = serial.Serial(self.port, BAUD_LOW, timeout=self.timeout)
-        self._log(f"opened {self.port}, target baud {self.target_baud}")
+        self.ser = serial.Serial(self.port, BAUD_LOW, timeout=self.timeout,
+                                 stopbits=self.stopbits)
+        self._log(f"opened {self.port}, target baud {self.target_baud}, "
+                  f"{self.stopbits} stop bit(s)")
 
         tried = []
         for baud in (self.target_baud, BAUD_LOW, BAUD_HIGH):
@@ -118,7 +124,14 @@ class PSC:
         )
 
     def _try_version(self):
-        """Send VER? and return the firmware string, or None."""
+        """Send VER? and return the firmware string, or None.
+
+        The reply is a version like "1.4" -- digit, dot, digit. We check
+        that shape rather than merely "3 decodable bytes", because at the
+        wrong baud rate garbage decodes as ASCII often enough to produce
+        a confident false positive and send every later command into the
+        void.
+        """
         try:
             self.ser.write(b"!SCVER?\r")
             self.ser.flush()
@@ -126,15 +139,24 @@ class PSC:
             reply = self.ser.read(3)
         except serial.SerialException:
             return None
-        if len(reply) == 3:
-            try:
-                return reply.decode("ascii")
-            except UnicodeDecodeError:
-                self._log(f"  non-ASCII reply {reply!r} (baud mismatch?)")
-                return None
-        if reply:
-            self._log(f"  short reply {reply!r} ({len(reply)} of 3 bytes)")
-        return None
+
+        if len(reply) != 3:
+            if reply:
+                self._log(f"  short reply {reply!r} ({len(reply)} of 3)")
+            return None
+
+        try:
+            text = reply.decode("ascii")
+        except UnicodeDecodeError:
+            self._log(f"  non-ASCII reply {reply!r} (baud mismatch?)")
+            return None
+
+        if not (text[0].isdigit() and text[1] == "." and text[2].isdigit()):
+            self._log(f"  reply {text!r} is not a version string "
+                      "(garbage from a baud mismatch?)")
+            return None
+
+        return text
 
     def _set_baud(self, baud):
         """Switch the PSC's baud rate, then follow it."""
@@ -205,9 +227,14 @@ class PSC:
         time.sleep(REPLY_DELAY)
         reply = self.ser.read(3)
         if len(reply) != 3:
+            self._log(f"RSP ch{channel}: short reply {reply!r}")
             return None
-        # Reply is: channel, then the position as high byte, low byte.
-        return (reply[1] << 8) | reply[2]
+        # Datasheet: reply is "x y z" where x is the channel and z:y is
+        # the value -- so z is the high byte, matching the low-byte-first
+        # order the position command uses.
+        value = (reply[2] << 8) | reply[1]
+        self._log(f"RSP ch{channel}: raw {reply!r} -> {value}")
+        return value
 
 
 # ---- angle helpers -----------------------------------------------------
