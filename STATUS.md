@@ -9,7 +9,58 @@ Pan/tilt servo control for the bird camera. Last updated 2026-10-05.
 - Two servos: pan on **GPIO12**, tilt on **GPIO13**
 - OS: Bookworm or later (pip is externally-managed)
 
-## Where things stand
+## PSC-USB (#28823) — WORKING as of 2026-10-08
+
+Pivoted from direct GPIO to the Parallax Servo Controller USB, to get
+jitter-free pulses, simpler wiring, and the hat connector back.
+`psc.py` + `psc_test.py`. Pan on channel 0, tilt on channel 1.
+
+Two separate faults had to be fixed before anything moved:
+
+1. **The addressing jumper has to be off.** With it fitted the board
+   answers on channels 16-31, so commands to 0-15 are ignored. This was
+   the one that finally made it go. Removing it mid-session did not
+   appear to help at the time — fault 2 was still masking it.
+
+2. **The serial line echoes.** The PSC's interface is single-wire
+   bidirectional, so the USB board's FTDI chip reads back every byte
+   transmitted before any reply arrives. The echo is an electrical
+   loopback: it returns cleanly at whatever baud the FTDI is set to,
+   whether or not the controller understood anything. Reading 3 bytes
+   straight after a write returned `!SC` -- the first echoed bytes --
+   which passed as a version reply and made every baud rate look
+   correct. The board sat at 2400 while we transmitted at 38400.
+   Every command must drain its own echo first.
+
+### Other PSC facts worth keeping
+
+- Position range on the wire is **250-1250 in 2 us steps**, which is
+  HALF the microsecond numbers the Windows PSCI GUI displays.
+  750 = 1500 us = center.
+- Command is exactly 8 bytes: `!SC` + chan + ramp + pw_low + pw_high + CR.
+  Verified byte-identical to the datasheet's PBASIC example:
+  `21 53 43 0F 07 E2 04 0D` for ch=15 ra=7 pw=1250.
+- **The datasheet contradicts itself on stop bits.** Prose says
+  "2400 N 8 2"; its own PBASIC example uses baudmode 396 = 2400 8N1.
+  One stop bit is what works.
+- Ramp 0-63 is the controller's own acceleration curve, done in
+  firmware. 0 = immediate; 63 ~ 60 s for a full excursion. This
+  replaces the Python easing loop from the GPIO version.
+- Baud defaults to 2400 and persists until a hardware reset, so the
+  host and board can disagree after a restart. `connect()` probes both.
+- Servos need their own supply on the screw terminals; USB powers only
+  the logic. So VER? answers even with the servo switch off.
+- `psc_probe.py` is the diagnostic: raw hex of echo and reply, both RSP
+  byte orders, and a sweep of baud and stop-bit combinations.
+
+### Still open
+
+- Does the firmware ramp look better or worse than the old Python
+  ease-out on camera? Linear-rate vs ease-out. `--ramp N` to taste.
+- RSP byte order is decoded low-byte-first to match the command, but
+  that has not been confirmed against a known position.
+
+## Earlier: direct GPIO approach (superseded)
 
 **Working:** servos move under `servo_test.py` using gpiozero/lgpio
 software PWM. Motion confirmed, but with visible jitter.
