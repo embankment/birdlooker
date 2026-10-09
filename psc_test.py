@@ -17,8 +17,8 @@ import time
 
 from psc import PSC, angle_to_position, position_to_angle
 
-PAN_CHANNEL = 0
-TILT_CHANNEL = 1
+PAN_CHANNEL = 0   # X
+TILT_CHANNEL = 4  # Y
 
 SWEEP_DEG = 20
 SWEEP_CYCLES = 5
