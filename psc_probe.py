@@ -35,28 +35,42 @@ def hexs(b):
     return " ".join(f"{x:02X}" for x in b) if b else "(nothing)"
 
 
-def ver(ser):
+def send(ser, packet, reply_bytes=0, label=""):
+    """Send a command and separate the echo from the real reply.
+
+    The PSC-USB loops transmitted bytes back through the FTDI chip. That
+    echo returns cleanly at any baud rate, so it tells you nothing about
+    whether the controller understood the command -- but mistaking it for
+    a reply makes every baud rate look like it works.
+    """
     ser.reset_input_buffer()
-    ser.write(b"!SCVER?\r")
+    ser.write(packet)
     ser.flush()
+    echo = ser.read(len(packet))
+    ok = echo == packet
+    print(f"   sent  {hexs(packet)}")
+    print(f"   echo  {hexs(echo)}  {'(matches)' if ok else '*** MISMATCH ***'}")
+    if reply_bytes == 0:
+        return b"", ok
     time.sleep(REPLY_DELAY)
-    return ser.read(3)
+    reply = ser.read(reply_bytes)
+    print(f"   reply {hexs(reply)}  {reply!r}")
+    return reply, ok
+
+
+def ver(ser):
+    return send(ser, b"!SCVER?\r", reply_bytes=3)[0]
 
 
 def rsp(ser, channel):
-    ser.reset_input_buffer()
-    ser.write(b"!SCRSP" + bytes([channel]) + b"\r")
-    ser.flush()
-    time.sleep(REPLY_DELAY)
-    return ser.read(3)
+    return send(ser, b"!SCRSP" + bytes([channel]) + b"\r", reply_bytes=3)[0]
 
 
 def set_pos(ser, channel, position, ramp=0):
     pkt = (b"!SC"
            + bytes([channel, ramp, position & 0xFF, (position >> 8) & 0xFF])
            + b"\r")
-    ser.write(pkt)
-    ser.flush()
+    send(ser, pkt, reply_bytes=0)
     return pkt
 
 
@@ -82,16 +96,20 @@ def run(port, baud, stopbits, channel):
         time.sleep(0.1)
 
         # --- 1. is anybody home? ---------------------------------------
+        print("\n1. VER?")
         reply = ver(ser)
-        print(f"\n1. VER?            -> {hexs(reply)}  {reply!r}")
-        if len(reply) != 3:
-            print("   No valid version reply. Wrong baud or wrong port.")
+        valid = (len(reply) == 3 and reply[0:1].isdigit()
+                 and reply[1:2] == b"." and reply[2:3].isdigit())
+        if not valid:
+            print("   Not a version string (expect something like '1.4').")
+            print("   The controller is not answering at this baud rate.")
             return False
+        print(f"   firmware {reply.decode('ascii')} -- this baud is correct")
 
         # --- 2. can we read a position? --------------------------------
+        print(f"\n2. RSP ch{channel}")
         before = rsp(ser, channel)
         lo_first, hi_first = decode_rsp(before)
-        print(f"\n2. RSP ch{channel}         -> {hexs(before)}")
         if lo_first is None:
             print("   No RSP reply. The PSC answers VER? but not RSP.")
         else:
@@ -103,14 +121,13 @@ def run(port, baud, stopbits, channel):
         # --- 3. does a position command change anything? ---------------
         # Pick a target far from wherever it is now.
         target = PW_MIN + 150 if (lo_first or PW_MID) > PW_MID else PW_MAX - 150
-        pkt = set_pos(ser, channel, target, ramp=0)
         print(f"\n3. Position ch{channel} -> {target} ({target * 2} us)")
-        print(f"   sent {len(pkt)} bytes: {hexs(pkt)}")
+        set_pos(ser, channel, target, ramp=0)
         time.sleep(1.5)
 
+        print("   reading back:")
         after = rsp(ser, channel)
         a_lo, a_hi = decode_rsp(after)
-        print(f"   RSP after       -> {hexs(after)}")
         if a_lo is not None:
             print(f"   decoded: low-byte-first={a_lo}  high-byte-first={a_hi}")
 

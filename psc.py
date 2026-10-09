@@ -124,21 +124,48 @@ class PSC:
             "are in the dialout group. The reset button restores 2400."
         )
 
+    def _send(self, packet, reply_bytes=0):
+        """Write a command, swallow the echo, and return any real reply.
+
+        The PSC's serial interface is single-wire bidirectional, so on the
+        USB board the FTDI chip reads back every byte we transmit before
+        the controller's own reply arrives. That echo is an electrical
+        loopback: it comes back cleanly at WHATEVER baud rate the FTDI is
+        set to, whether or not the PSC understood a word of it. Mistaking
+        it for a reply makes every baud rate look correct.
+
+        Returns the reply bytes (possibly empty), or None on a port error.
+        """
+        try:
+            self.ser.write(packet)
+            self.ser.flush()
+
+            echo = self.ser.read(len(packet))
+            if echo != packet:
+                self._log(f"  echo mismatch: sent {packet!r}, got {echo!r}")
+                # Not the echo we expected. Whatever arrived may be a
+                # reply, so hand it back rather than discarding it.
+                return echo
+
+            if reply_bytes == 0:
+                return b""
+
+            time.sleep(REPLY_DELAY)
+            return self.ser.read(reply_bytes)
+        except serial.SerialException as e:
+            self._log(f"  serial error: {e}")
+            return None
+
     def _try_version(self):
         """Send VER? and return the firmware string, or None.
 
         The reply is a version like "1.4" -- digit, dot, digit. We check
-        that shape rather than merely "3 decodable bytes", because at the
-        wrong baud rate garbage decodes as ASCII often enough to produce
-        a confident false positive and send every later command into the
-        void.
+        that shape rather than merely "3 decodable bytes", because both
+        the command echo and baud-mismatch garbage decode as ASCII often
+        enough to produce a confident false positive.
         """
-        try:
-            self.ser.write(b"!SCVER?\r")
-            self.ser.flush()
-            time.sleep(REPLY_DELAY)
-            reply = self.ser.read(3)
-        except serial.SerialException:
+        reply = self._send(b"!SCVER?\r", reply_bytes=3)
+        if reply is None:
             return None
 
         if len(reply) != 3:
@@ -162,9 +189,12 @@ class PSC:
     def _set_baud(self, baud):
         """Switch the PSC's baud rate, then follow it."""
         flag = 1 if baud == BAUD_HIGH else 0
-        self.ser.write(b"!SCSBR" + bytes([flag]) + b"\r")
+        packet = b"!SCSBR" + bytes([flag]) + b"\r"
+        self.ser.write(packet)
         self.ser.flush()
-        # The PSC replies at the NEW rate, so switch before reading.
+        # Swallow the echo at the OLD rate before switching.
+        self.ser.read(len(packet))
+        # The PSC replies at the NEW rate, so switch before reading it.
         time.sleep(0.05)
         self.ser.baudrate = baud
         time.sleep(0.05)
@@ -211,8 +241,9 @@ class PSC:
             + bytes([chan, ramp, position & 0xFF, (position >> 8) & 0xFF])
             + b"\r"
         )
-        self.ser.write(packet)
-        self.ser.flush()
+        # The position command gets no reply, but its echo still has to be
+        # drained or it pollutes the next command's read.
+        self._send(packet, reply_bytes=0)
 
     def get_position(self, channel):
         """Read a channel's current position, or None if no reply.
@@ -223,11 +254,8 @@ class PSC:
             raise PSCError("not connected")
         chan = channel + self.channel_offset
         self.ser.reset_input_buffer()
-        self.ser.write(b"!SCRSP" + bytes([chan]) + b"\r")
-        self.ser.flush()
-        time.sleep(REPLY_DELAY)
-        reply = self.ser.read(3)
-        if len(reply) != 3:
+        reply = self._send(b"!SCRSP" + bytes([chan]) + b"\r", reply_bytes=3)
+        if reply is None or len(reply) != 3:
             self._log(f"RSP ch{channel}: short reply {reply!r}")
             return None
         # Datasheet: reply is "x y z" where x is the channel and z:y is
