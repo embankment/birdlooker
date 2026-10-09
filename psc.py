@@ -60,7 +60,7 @@ class PSC:
     """
 
     def __init__(self, port="/dev/ttyUSB0", baud=BAUD_HIGH, timeout=0.5,
-                 jumper=False):
+                 jumper=False, debug=False):
         self.port = port
         self.target_baud = baud
         self.timeout = timeout
@@ -68,6 +68,16 @@ class PSC:
         self.channel_offset = 16 if jumper else 0
         self.ser = None
         self.version = None
+        self.debug = debug
+
+    def _log(self, msg):
+        if self.debug:
+            print(f"[psc] {msg}")
+
+    @property
+    def baudrate(self):
+        """The rate currently in use, or None when not connected."""
+        return self.ser.baudrate if self.ser else None
 
     # ---- connection ----------------------------------------------------
 
@@ -78,17 +88,28 @@ class PSC:
         last set to until it is reset.
         """
         self.ser = serial.Serial(self.port, BAUD_LOW, timeout=self.timeout)
+        self._log(f"opened {self.port}, target baud {self.target_baud}")
 
+        tried = []
         for baud in (self.target_baud, BAUD_LOW, BAUD_HIGH):
+            if baud in tried:
+                continue
+            tried.append(baud)
             self.ser.baudrate = baud
             self.ser.reset_input_buffer()
+            self._log(f"probing at {baud}...")
             version = self._try_version()
             if version:
                 self.version = version
+                self._log(f"found PSC at {baud}, firmware {version!r}")
                 if baud != self.target_baud:
+                    self._log(f"switching {baud} -> {self.target_baud}")
                     self._set_baud(self.target_baud)
+                self._log(f"negotiated baud: {self.ser.baudrate}")
                 return self
+            self._log(f"  no reply at {baud}")
 
+        self._log(f"no response at any of {tried}")
         self.close()
         raise PSCError(
             f"No response from PSC on {self.port} at 2400 or 38400 baud. "
@@ -109,7 +130,10 @@ class PSC:
             try:
                 return reply.decode("ascii")
             except UnicodeDecodeError:
+                self._log(f"  non-ASCII reply {reply!r} (baud mismatch?)")
                 return None
+        if reply:
+            self._log(f"  short reply {reply!r} ({len(reply)} of 3 bytes)")
         return None
 
     def _set_baud(self, baud):

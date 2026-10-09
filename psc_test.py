@@ -72,10 +72,13 @@ def main():
                     help="ramp rate 0-63 for phase 2 (0 = full speed)")
     ap.add_argument("--jumper", action="store_true",
                     help="channel jumper fitted (channels become 16-31)")
+    ap.add_argument("--debug", action="store_true",
+                    help="show the baud probe and other protocol detail")
     args = ap.parse_args()
 
-    with PSC(args.port, jumper=args.jumper) as psc:
-        print(f"Connected to PSC on {args.port}, firmware {psc.version}")
+    with PSC(args.port, jumper=args.jumper, debug=args.debug) as psc:
+        print(f"Connected to PSC on {args.port} at {psc.baudrate} baud, "
+              f"firmware {psc.version}")
         print(f"Phase 2 ramp rate: {args.ramp}")
 
         print(f"\nCentering")
