@@ -60,13 +60,14 @@ class PSC:
     """
 
     def __init__(self, port="/dev/ttyUSB0", baud=BAUD_HIGH, timeout=0.5,
-                 jumper=False, debug=False, stopbits=2):
+                 jumper=False, debug=False, stopbits=1):
         self.port = port
         self.target_baud = baud
         self.timeout = timeout
-        # Datasheet p.8 specifies "2400 N 8 2" -- TWO stop bits. pyserial
-        # defaults to one, which the PSC may reject on longer binary
-        # commands even while short ASCII ones get through.
+        # The datasheet's prose (p.8) says "2400 N 8 2" -- two stop bits --
+        # but its own PBASIC example on p.10 uses baudmode 396, which is
+        # 2400 8N1. The working example wins, so default to one stop bit.
+        # psc_probe.py tries both if you need to rule it out.
         self.stopbits = stopbits
         # With the channel jumper fitted, channels shift 0-15 -> 16-31.
         self.channel_offset = 16 if jumper else 0
