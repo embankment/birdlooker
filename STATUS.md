@@ -53,6 +53,24 @@ Two separate faults had to be fixed before anything moved:
 - `psc_probe.py` is the diagnostic: raw hex of echo and reply, both RSP
   byte orders, and a sweep of baud and stop-bit combinations.
 
+## Camera field of view — MEASURED 2026-10-09
+
+    HFOV = 66.7 deg
+    VFOV = 50.0 deg   (4:3 sensor, derived as HFOV * 3/4)
+
+Measured with `pan_demo.py calibrate`: pan a known angle, see how far a
+centred target shifts as a fraction of frame width, then
+`HFOV = angle / shift`. This is for the current camera and ribbon (both
+swapped on 2026-10-09) at 1600x1200. Re-measure if either changes.
+
+Step 2's click-to-look mapping uses these:
+
+    pan_offset  = (click_x - 0.5) * HFOV
+    tilt_offset = (0.5 - click_y) * VFOV
+
+Slightly wider than the ~62 deg a stock IMX219 lens is quoted at, which
+is within eyeball-the-fraction error.
+
 ### Still open
 
 - Does the firmware ramp look better or worse than the old Python
