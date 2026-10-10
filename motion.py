@@ -27,6 +27,26 @@ RAMP_IMMEDIATE = 0
 
 DEFAULT_SPEED = 25.0     # degrees per second at the fastest part of a move
 
+# ---------------------------------------------------------------------
+# PER-SERVO DEAD BAND -- re-measure with deadband.py after swapping a
+# servo, and update the numbers here. That is the only change needed.
+#
+# Measured 2026-10-09, in PSC units (1 unit = 2 us of pulse width):
+#   channel 0 (pan):  4 units  -- worn, 0.73 deg granularity
+#   channel 1 (tilt): 1 unit   -- healthy, 0.18 deg (hardware limit)
+#
+# A servo ignores any step smaller than its dead band. Sending one
+# anyway does not move it; the error accumulates silently until it
+# crosses the band and the servo lurches, at intervals we do not
+# control. Quantizing to the dead band gives the same number of
+# physical movements, evenly spaced and on our schedule instead.
+#
+# Lower is better. 1 is the hardware floor, so a new servo measuring 1
+# or 2 needs no other change -- the motion simply gets finer.
+# ---------------------------------------------------------------------
+DEADBAND = {0: 4, 1: 1}
+DEFAULT_DEADBAND = 1
+
 
 def smoothstep(t):
     """Ease in and out. t in [0,1].
@@ -51,7 +71,7 @@ class Mover:
 
     def __init__(self, psc, pan_channel=0, tilt_channel=1,
                  pan_limit=60.0, tilt_limit=45.0,
-                 speed=DEFAULT_SPEED, ease=smoothstep):
+                 speed=DEFAULT_SPEED, ease=smoothstep, deadband=None):
         self.psc = psc
         self.pan_channel = pan_channel
         self.tilt_channel = tilt_channel
@@ -62,20 +82,55 @@ class Mover:
         self.pan = 0.0
         self.tilt = 0.0
 
+        band = DEADBAND if deadband is None else deadband
+        self.pan_deadband = band.get(pan_channel, DEFAULT_DEADBAND)
+        self.tilt_deadband = band.get(tilt_channel, DEFAULT_DEADBAND)
+
+        # Last position actually transmitted, per channel. None until
+        # the first write.
+        self._sent_pan = None
+        self._sent_tilt = None
+
+        # Commands skipped because they fell inside a dead band -- useful
+        # for seeing how much of the serial traffic was pointless.
+        self.skipped = 0
+
     def clamp(self, pan, tilt):
         return (max(-self.pan_limit, min(self.pan_limit, pan)),
                 max(-self.tilt_limit, min(self.tilt_limit, tilt)))
 
-    def _write(self, pan, tilt):
-        self.psc.set_position(self.pan_channel, angle_to_position(pan),
-                              ramp=RAMP_IMMEDIATE)
-        self.psc.set_position(self.tilt_channel, angle_to_position(tilt),
-                              ramp=RAMP_IMMEDIATE)
+    def _write(self, pan, tilt, force=False):
+        """Send positions, skipping any step the servo cannot resolve.
+
+        `force` sends regardless, for the final position of a move so it
+        lands exactly on target rather than up to one dead band short.
+        """
+        want_pan = angle_to_position(pan)
+        want_tilt = angle_to_position(tilt)
+
+        if (force or self._sent_pan is None
+                or abs(want_pan - self._sent_pan) >= self.pan_deadband):
+            self.psc.set_position(self.pan_channel, want_pan,
+                                  ramp=RAMP_IMMEDIATE)
+            self._sent_pan = want_pan
+        else:
+            self.skipped += 1
+
+        if (force or self._sent_tilt is None
+                or abs(want_tilt - self._sent_tilt) >= self.tilt_deadband):
+            self.psc.set_position(self.tilt_channel, want_tilt,
+                                  ramp=RAMP_IMMEDIATE)
+            self._sent_tilt = want_tilt
+        else:
+            self.skipped += 1
+
+        # Track the ideal position, not the quantized one, so rounding
+        # does not accumulate across a sequence of moves.
         self.pan, self.tilt = pan, tilt
 
     def jump(self, pan, tilt):
         """Go immediately, no interpolation."""
-        self._write(*self.clamp(pan, tilt))
+        self._write(*self.clamp(pan, tilt), force=True)
 
     def move_to(self, pan, tilt, speed=None, on_step=None):
         """Travel to (pan, tilt) in a straight line, eased at both ends.
@@ -118,6 +173,13 @@ class Mover:
             if lag > 0:
                 time.sleep(lag)
 
+        # Deliberately NOT forced. Forcing would emit a final sub-dead-band
+        # step that moves the servo nowhere while recording it as sent,
+        # putting our model out of step with the hardware. Quantizing all
+        # the way through leaves the servo within one dead band of target
+        # -- which is its physical resolution anyway -- and keeps
+        # _sent_* honest, so the next move corrects from where the servo
+        # actually is.
         self._write(target_pan, target_tilt)
         return time.monotonic() - t0
 

@@ -71,6 +71,47 @@ Step 2's click-to-look mapping uses these:
 Slightly wider than the ~62 deg a stock IMX219 lens is quoted at, which
 is within eyeball-the-fraction error.
 
+## Servo dead bands — MEASURED 2026-10-09
+
+    channel 0 (pan):  4 units = 8 us  -> 0.73 deg granularity   WORN
+    channel 1 (tilt): 1 unit  = 2 us  -> 0.18 deg (hardware floor)  OK
+
+Measured with `deadband.py`. The asymmetry was the useful part: tilt is
+as good as the hardware allows, so the controller, wiring and protocol
+are all fine and exactly one servo is tired.
+
+**After swapping a servo, re-run `deadband.py` and update the `DEADBAND`
+dict at the top of `motion.py`.** That is the only change needed; a new
+servo measuring 1 or 2 just makes the motion finer. Beefier servos are
+planned for channel 0.
+
+### Why the controller's ramp was abandoned
+
+The PSC's own ramp updates on the firmware's slow tick, visible as
+stepping during slow moves, and each channel ramps independently so
+diagonal moves dogleg. Ramp is also the ONLY motion parameter available
+over serial — the GUI's Offset and Delay are host-side, not commands —
+so there was nothing else to tune.
+
+`motion.Mover` sends ramp=0 and interpolates here at 50 Hz, advancing
+both axes against one eased progress value so the path is straight and
+they arrive together.
+
+### Dead-band quantization
+
+A servo ignores any step below its dead band; the error then accumulates
+silently and the servo lurches at intervals we do not control. So Mover
+only transmits when the position differs from the last sent by at least
+that channel's dead band. Same number of physical movements, evenly
+spaced, on our schedule.
+
+This also removes the "minimum useful speed" the probe warns about. At
+10 deg/sec a pan move sends 28 commands and skips 167, every step
+exactly 4 units. Slow panning works fine, just at 0.73 deg granularity.
+
+`smooth_test.py --deadband off` disables it for comparison;
+`--deadband 0:2,1:1` overrides without editing the file.
+
 ### Still open
 
 - Does the firmware ramp look better or worse than the old Python

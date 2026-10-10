@@ -63,10 +63,22 @@ def main():
                     help="no easing, constant rate")
     ap.add_argument("--diagonal", action="store_true",
                     help="only run the dogleg test")
+    ap.add_argument("--deadband", type=str, default=None,
+                    help="override measured dead bands, e.g. --deadband 0:4,1:1 "
+                         "or --deadband off to disable quantizing")
     ap.add_argument("--debug", action="store_true")
     args = ap.parse_args()
 
     ease = motion.linear if args.linear else motion.smoothstep
+
+    deadband = None
+    if args.deadband == "off":
+        deadband = {}
+    elif args.deadband:
+        deadband = {}
+        for pair in args.deadband.split(","):
+            ch, val = pair.split(":")
+            deadband[int(ch)] = int(val)
 
     with PSC(args.port, debug=args.debug) as psc:
         print(f"PSC firmware {psc.version} at {psc.baudrate} baud")
@@ -75,7 +87,11 @@ def main():
               f"{'linear' if args.linear else 'eased'}")
 
         mover = motion.Mover(psc, PAN_CHANNEL, TILT_CHANNEL,
-                             speed=args.speed, ease=ease)
+                             speed=args.speed, ease=ease, deadband=deadband)
+        print(f"Dead bands: pan {mover.pan_deadband} units "
+              f"({mover.pan_deadband * 0.184:.2f} deg), "
+              f"tilt {mover.tilt_deadband} units "
+              f"({mover.tilt_deadband * 0.184:.2f} deg)")
 
         print("\nCentering")
         mover.jump(0, 0)
@@ -107,6 +123,10 @@ def main():
 
         print("\nReturning to center")
         mover.move_to(0, 0)
+
+        if mover.skipped:
+            print(f"\nSkipped {mover.skipped} commands that fell inside a")
+            print("dead band -- those would have moved nothing.")
 
     return 0
 
