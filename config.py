@@ -63,6 +63,23 @@ STREAM_PORT = 8080    # pi-webrtc's WHEP endpoint
 SERIAL_PORT = "/dev/ttyUSB0"
 
 # ---------------------------------------------------------------------
+# Vote accumulation.
+#
+# Several viewers clicking at once should blend into one target rather
+# than fighting, with each click superseding the last. See votes.py.
+#
+# With a single viewer this behaves identically to direct control, just
+# resolved on the next tick -- so there is no separate single-viewer
+# code path to maintain.
+# ---------------------------------------------------------------------
+VOTING_ENABLED = True
+
+VOTE_DECAY_SECONDS = 4.0      # weight falls to 1/e after this
+VOTE_MAX_AGE_SECONDS = 12.0   # votes older than this are dropped
+VOTE_DEAD_ZONE_DEGREES = 1.5  # ignore consensus shifts smaller than this
+VOTE_RESOLVE_INTERVAL = 0.2   # seconds between consensus recalculations
+
+# ---------------------------------------------------------------------
 # Rate limiting -- a token bucket per client IP.
 #
 # Tuned for LAN use with a few viewers. The June design's public-facing

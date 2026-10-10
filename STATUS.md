@@ -74,6 +74,47 @@ Rate limiting is a token bucket per IP, charged only after validation.
 Note buckets are keyed by IP, so several browsers on one laptop share
 one bucket.
 
+### Vote accumulation
+
+`votes.py`. Several viewers clicking at once blend into one target
+instead of each click superseding the last.
+
+- A click votes for an **absolute direction**, resolved against where
+  the camera was pointing when it arrived — not a nudge, since by the
+  time consensus resolves the camera may have moved.
+- Votes **decay exponentially** (4 s), so a burst of old clicks cannot
+  drag the camera back somewhere it has left.
+- **One active vote per viewer**, replaced on each click. Otherwise one
+  enthusiastic clicker outvotes a crowd. The rate limiter caps how
+  often; this caps how much.
+- A **dead zone** (1.5 deg) stops the camera fidgeting over consensus
+  drift of fractions of a degree.
+
+**Consensus is a weighted MEDIAN, not a mean.** The June sketch said
+mean; that is the wrong tool. Three viewers on a bird at -10 and one
+clicking the far corner at +50 average to +5 — pointing at nothing
+anybody wanted. On a public camera that outlier is the entire threat
+model. The median lands on -10 and ignores them. Where viewers broadly
+agree the two give near-identical answers, so the robustness is free.
+
+Verified end to end with simulated viewers: majority wins while an
+outlier is ignored, two opposed viewers blend to the midpoint, and a
+lone viewer still gets direct control.
+
+A resolver thread recomputes consensus every 200 ms, separate from the
+motion thread. Motion is about getting somewhere smoothly; this is
+about deciding where. Keeping them apart means consensus can shift
+mid-move and the camera simply retargets.
+
+`VOTING_ENABLED = False` in config.py resolves each click immediately
+instead — the same code path, for direct A/B.
+
+**Known approximation:** a vote is resolved against the camera's
+position when the click *arrives*, but the frame the viewer clicked was
+captured ~200 ms earlier. Negligible for ordinary clicks, larger while
+the camera is moving fast. Frame timestamps would fix it if it ever
+matters.
+
 ### Calibration lives in config.py
 
 FOV, dead bands, channels, limits, axis inversion, rate limits. When
@@ -214,8 +255,11 @@ Ordered by what unblocks what. Decided 2026-10-10.
    exposure at all. With an SFU the June design's heartbeat check gets
    better: the SFU knows its participants, so a voter can be verified
    against real subscription state rather than an inferred heartbeat.
-5. **Vote accumulator.** Last, because tuning its constants needs
-   several simultaneous real strangers.
+5. ~~Vote accumulator~~ — done ahead of schedule, see "Vote
+   accumulation". It needed no new infrastructure and the failure it
+   fixes (clicks fighting) was already observable with a lapful of
+   devices. It lives above the transport, so it moves to the aggregator
+   unchanged.
 
 `Camera.look_at()` is the seam for 4 and 5 — that is where "aggregator
 says go here" replaces "HTTP handler says go here". Everything

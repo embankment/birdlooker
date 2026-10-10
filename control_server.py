@@ -27,6 +27,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import config
 import motion
+import votes
 from psc import PSC
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -135,6 +136,24 @@ class Camera:
             pan, tilt = self.mover.pan, self.mover.tilt
         return self.look_at(pan + dpan, tilt + dtilt)
 
+    def absolute_from_offset(self, dpan, dtilt):
+        """Where a click points, as an absolute direction.
+
+        A vote has to name a direction in the world, not a nudge: by the
+        time the consensus resolves, the camera may have moved, and
+        "20 degrees right of wherever you end up" is not what anyone
+        clicked on.
+
+        Measured against where the camera is NOW, which is approximate
+        while it is moving -- the frame the viewer clicked was captured
+        a couple of hundred milliseconds earlier. Small for ordinary
+        clicks; worth revisiting with frame timestamps if it ever
+        matters.
+        """
+        with self._lock:
+            return self.mover.clamp(self.mover.pan + dpan,
+                                    self.mover.tilt + dtilt)
+
     def state(self):
         with self._lock:
             return {
@@ -191,10 +210,44 @@ class Camera:
 # HTTP
 # ---------------------------------------------------------------------
 
+class Resolver:
+    """Turns accumulated votes into camera targets on a fixed tick.
+
+    Separate from the motion thread on purpose. Motion is about getting
+    somewhere smoothly; this is about deciding where. Keeping them apart
+    means the consensus can shift mid-move and the camera just
+    retargets, which is the behaviour you want when a second viewer
+    clicks while the first one's move is still running.
+    """
+
+    def __init__(self, camera, accumulator, interval):
+        self.camera = camera
+        self.accumulator = accumulator
+        self.interval = interval
+        self._running = True
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self):
+        while self._running:
+            time.sleep(self.interval)
+            try:
+                result = self.accumulator.resolve()
+                if result is not None:
+                    self.camera.look_at(*result)
+            except Exception as e:
+                print(f"[resolver] {e}")
+
+    def stop(self):
+        self._running = False
+        self._thread.join(timeout=2.0)
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "birdlooker/1.0"
     camera = None
     limiter = None
+    accumulator = None
 
     def log_message(self, fmt, *args):
         # The default logs every request; too noisy with /state polling.
@@ -231,7 +284,10 @@ class Handler(BaseHTTPRequestHandler):
         if self.path in ("/", "/index.html"):
             self._file(os.path.join(STATIC, "index.html"), "text/html")
         elif self.path == "/state":
-            self._json(self.camera.state())
+            state = self.camera.state()
+            state.update(self.accumulator.stats())
+            state["voting"] = config.VOTING_ENABLED
+            self._json(state)
         elif self.path == "/config":
             self._json({
                 "stream_port": config.STREAM_PORT,
@@ -281,9 +337,23 @@ class Handler(BaseHTTPRequestHandler):
         if config.INVERT_TILT:
             dtilt = -dtilt
 
-        pan, tilt = self.camera.nudge(dpan, dtilt)
-        self._json({"ok": True, "pan": round(pan, 2), "tilt": round(tilt, 2),
-                    "dpan": round(dpan, 2), "dtilt": round(dtilt, 2)})
+        # Record a vote for an absolute direction rather than moving
+        # directly, so simultaneous viewers blend instead of each click
+        # cancelling the last.
+        pan, tilt = self.camera.absolute_from_offset(dpan, dtilt)
+        self.accumulator.add(self.client_address[0], pan, tilt)
+
+        if not config.VOTING_ENABLED:
+            # Same path, resolved immediately -- no second code path to
+            # keep in step, and a direct A/B against voting.
+            result = self.accumulator.resolve()
+            if result is not None:
+                self.camera.look_at(*result)
+
+        self._json({"ok": True,
+                    "pan": round(pan, 2), "tilt": round(tilt, 2),
+                    "dpan": round(dpan, 2), "dtilt": round(dtilt, 2),
+                    **self.accumulator.stats()})
 
 
 def main():
@@ -294,6 +364,16 @@ def main():
         Handler.camera = Camera(psc)
         Handler.limiter = TokenBucket(config.BUCKET_CAPACITY,
                                       config.BUCKET_REFILL_SECONDS)
+        Handler.accumulator = votes.VoteAccumulator(
+            decay_seconds=config.VOTE_DECAY_SECONDS,
+            max_age_seconds=config.VOTE_MAX_AGE_SECONDS,
+            dead_zone_degrees=config.VOTE_DEAD_ZONE_DEGREES,
+        )
+
+        resolver = None
+        if config.VOTING_ENABLED:
+            resolver = Resolver(Handler.camera, Handler.accumulator,
+                                config.VOTE_RESOLVE_INTERVAL)
 
         server = ThreadingHTTPServer(("0.0.0.0", config.CONTROL_PORT),
                                      Handler)
@@ -302,6 +382,12 @@ def main():
             ip = socket.gethostbyname(socket.gethostname())
         except Exception:
             ip = "<pi-ip>"
+
+        if config.VOTING_ENABLED:
+            print(f"  voting on: {config.VOTE_DECAY_SECONDS:.0f}s decay, "
+                  f"{config.VOTE_DEAD_ZONE_DEGREES} deg dead zone")
+        else:
+            print(f"  voting off: each click moves the camera directly")
 
         print(f"\n  Viewer:  http://{ip}:{config.CONTROL_PORT}/")
         print(f"  Stream:  http://{ip}:{config.STREAM_PORT} "
@@ -314,6 +400,8 @@ def main():
         except KeyboardInterrupt:
             print("\nShutting down")
         finally:
+            if resolver:
+                resolver.stop()
             Handler.camera.stop()
             server.server_close()
 
