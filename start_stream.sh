@@ -5,7 +5,7 @@
 # Ctrl-C stops the stream cleanly.
 
 set -u
-PI_WEBRTC=/home/squintr/pi-webrtc ./start_stream.sh
+PI_WEBRTC=/home/squintr/pi-webrtc
 #PI_WEBRTC="${PI_WEBRTC:-pi-webrtc}"
 WIDTH="${WIDTH:-1600}"       # must be a multiple of 64 (stride padding)
 HEIGHT="${HEIGHT:-1200}"
