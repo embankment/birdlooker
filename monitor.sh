@@ -19,6 +19,8 @@ INTERVAL="${1:-1}"
 PROC="${PROC:-pi-webrtc}"
 
 NCORES=$(nproc)
+CLK_TCK=$(getconf CLK_TCK 2>/dev/null || echo 100)
+prev_proc_ticks=0
 
 peak_total=0
 peak_proc=0
@@ -81,6 +83,16 @@ read_cpu
 prev_idle=("${cur_idle[@]}")
 prev_total=("${cur_total[@]}")
 
+# Seed the process counter too. Without this the first delta spans the
+# process's entire lifetime, reads absurdly high, and that bogus value
+# becomes the reported peak.
+for pid in $(pgrep -x "$PROC" 2>/dev/null); do
+    if [ -r "/proc/$pid/stat" ]; then
+        set -- $(cut -d' ' -f14,15 "/proc/$pid/stat" 2>/dev/null)
+        prev_proc_ticks=$((prev_proc_ticks + ${1:-0} + ${2:-0}))
+    fi
+done
+
 while true; do
     sleep "$INTERVAL"
     read_cpu
@@ -110,11 +122,25 @@ while true; do
     prev_idle=("${cur_idle[@]}")
     prev_total=("${cur_total[@]}")
 
-    # Target process. ps gives CPU as a share of ONE core, so a
-    # multithreaded encoder legitimately reads above 100.
-    proc_pct=$(ps -C "$PROC" -o %cpu= 2>/dev/null \
-               | awk '{s+=$1} END {printf "%.1f", s+0}')
-    [ -z "$proc_pct" ] && proc_pct=0
+    # Target process, as a share of ONE core -- a multithreaded encoder
+    # legitimately reads above 100.
+    #
+    # Computed from /proc/<pid>/stat deltas, NOT `ps -o %cpu`: ps reports
+    # the average over the process's whole lifetime, so a long-running
+    # encoder that is busy right now still reads low. That understates
+    # exactly the spike this script exists to catch.
+    proc_ticks=0
+    for pid in $(pgrep -x "$PROC" 2>/dev/null); do
+        if [ -r "/proc/$pid/stat" ]; then
+            set -- $(cut -d' ' -f14,15 "/proc/$pid/stat" 2>/dev/null)
+            proc_ticks=$((proc_ticks + ${1:-0} + ${2:-0}))
+        fi
+    done
+    proc_pct=$(awk -v cur="$proc_ticks" -v prev="$prev_proc_ticks" \
+                   -v hz="$CLK_TCK" -v dt="$INTERVAL" \
+        'BEGIN { d = cur - prev; if (d < 0) d = 0;
+                 printf "%.1f", (d / hz) / dt * 100 }')
+    prev_proc_ticks=$proc_ticks
 
     temp=$(vcgencmd measure_temp 2>/dev/null \
            | sed 's/temp=//; s/'"'"'C//')
