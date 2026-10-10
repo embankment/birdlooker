@@ -36,20 +36,52 @@
     padding: 16px; min-height: 0;
   }
 
-  /* The stage is sized to the video's own aspect ratio, so the overlay
-     never has to account for letterboxing -- clicks map straight to
-     frame coordinates. */
+  /* The stage carries the aspect ratio and the video fills it, rather
+     than the video sizing the stage. Done the other way round, the
+     video's max-height shrinks it but the stage keeps the width it
+     computed from the video's unconstrained size -- so the stage ends
+     up wider than the picture. That misplaces the overlay AND the click
+     mapping, since clicks are measured against the stage.
+     The ratio is set from the stream's real dimensions once metadata
+     arrives; 4/3 is just the starting guess. */
   #stage {
-    position: relative; max-width: 100%; max-height: 100%;
+    position: relative;
+    aspect-ratio: 4 / 3;
+    max-width: 100%; max-height: 100%;
     line-height: 0; cursor: crosshair;
     border: 1px solid var(--line); border-radius: 4px; overflow: hidden;
     background: #000;
   }
-  video { display: block; max-width: 100%; max-height: 100%; }
+  video {
+    display: block; width: 100%; height: 100%;
+    object-fit: contain;
+  }
 
-  #overlay {
-    position: absolute; inset: 0;
-    pointer-events: none;
+  /* Overlay marks are positioned in percentages and sized in pixels, so
+     they cannot be stretched by the frame's aspect ratio. */
+  #overlay { position: absolute; inset: 0; pointer-events: none; }
+
+  #crosshair {
+    position: absolute; left: 50%; top: 50%;
+    width: 40px; height: 40px; margin: -20px 0 0 -20px;
+    opacity: .4;
+  }
+  #crosshair::before, #crosshair::after {
+    content: ""; position: absolute; background: var(--text);
+  }
+  #crosshair::before { left: 50%; top: 0; width: 1px; height: 100%; }
+  #crosshair::after  { top: 50%; left: 0; height: 1px; width: 100%; }
+
+  #marker {
+    position: absolute; width: 44px; height: 44px;
+    margin: -22px 0 0 -22px;
+    border: 2px solid var(--accent); border-radius: 50%;
+    opacity: 0; transition: opacity .25s;
+  }
+  #marker::after {
+    content: ""; position: absolute; left: 50%; top: 50%;
+    width: 4px; height: 4px; margin: -2px 0 0 -2px;
+    background: var(--accent); border-radius: 50%;
   }
 
   footer {
@@ -85,19 +117,10 @@
 <main>
   <div id="stage">
     <video id="video" autoplay playsinline muted></video>
-    <svg id="overlay" viewBox="0 0 1000 750" preserveAspectRatio="none">
-      <!-- centre crosshair: where the camera is actually pointing -->
-      <g stroke="currentColor" opacity=".35">
-        <line x1="500" y1="355" x2="500" y2="395"/>
-        <line x1="480" y1="375" x2="520" y2="375"/>
-      </g>
-      <!-- click marker -->
-      <g id="marker" opacity="0">
-        <circle cx="0" cy="0" r="22" fill="none"
-                stroke="var(--accent)" stroke-width="3"/>
-        <circle cx="0" cy="0" r="3" fill="var(--accent)"/>
-      </g>
-    </svg>
+    <div id="overlay">
+      <div id="crosshair"></div>
+      <div id="marker"></div>
+    </div>
   </div>
 </main>
 
@@ -144,6 +167,16 @@ async function connect() {
   pc.addTransceiver('video', { direction: 'recvonly' });
 
   pc.ontrack = (e) => { video.srcObject = e.streams[0]; };
+
+  // Match the stage to the stream's real dimensions. Until this fires
+  // the stage uses the 4/3 guess from CSS; afterwards the stage, the
+  // video and the overlay are exactly the same rectangle, which is what
+  // makes the click mapping correct.
+  video.addEventListener('loadedmetadata', () => {
+    if (video.videoWidth && video.videoHeight) {
+      stage.style.aspectRatio = `${video.videoWidth} / ${video.videoHeight}`;
+    }
+  });
 
   pc.oniceconnectionstatechange = () => {
     const s = pc.iceConnectionState;
@@ -222,11 +255,11 @@ stage.addEventListener('click', async (e) => {
 
 let markerTimer = null;
 function showMarker(nx, ny) {
-  marker.setAttribute('transform',
-    `translate(${(nx * 1000).toFixed(1)} ${(ny * 750).toFixed(1)})`);
-  marker.setAttribute('opacity', '1');
+  marker.style.left = (nx * 100).toFixed(2) + '%';
+  marker.style.top  = (ny * 100).toFixed(2) + '%';
+  marker.style.opacity = '1';
   clearTimeout(markerTimer);
-  markerTimer = setTimeout(() => marker.setAttribute('opacity', '0'), 1400);
+  markerTimer = setTimeout(() => { marker.style.opacity = '0'; }, 1400);
 }
 
 let flashTimer = null;

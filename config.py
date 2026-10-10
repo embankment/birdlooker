@@ -46,7 +46,7 @@ TILT_LIMIT = 45.0
 # negative is not predictable from first principles. Flip these if the
 # camera moves the wrong way; it is a thirty-second empirical test.
 # ---------------------------------------------------------------------
-INVERT_PAN = False
+INVERT_PAN = True     # verified on hardware 2026-10-10
 INVERT_TILT = True    # verified on hardware 2026-10-10
 
 # ---------------------------------------------------------------------
