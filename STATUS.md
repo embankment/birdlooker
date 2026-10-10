@@ -155,6 +155,38 @@ The viewer page handles it either way: the stage re-matches the video's
 aspect ratio on the `resize` event, not just `loadedmetadata`, so the
 click overlay cannot drift out of step with the picture.
 
+### Idle return to home
+
+After `IDLE_SECONDS` (180) without a click, the camera eases back to
+`HOME_PAN`/`HOME_TILT` at a deliberately slow `HOME_SPEED` — nothing is
+waiting on that move. Without it, whoever clicked last leaves the
+camera pointing there indefinitely.
+
+The return is marked `is_idle_return` so it does NOT reset the idle
+timer; otherwise the camera would keep deciding to go home forever. A
+latch stops it re-issuing the move every tick. A click counts as
+activity even when the consensus lands inside the dead zone and nothing
+moves — someone is watching, so postpone the trip.
+
+Set HOME to wherever the feeder is once the camera is in its final
+spot.
+
+### Travel limits are measured, not guessed
+
+`find_limits.py` walks each axis outward in 5 degree steps and waits
+for you to stop it, then suggests `PAN_LIMIT`/`TILT_LIMIT` with a 3
+degree margin. **Worth running on any new mount.** The original numbers
+were guesses, and a servo commanded past its mechanical stop sits there
+stalled — drawing current, heating and grinding the gear train, which a
+worn servo does not need.
+
+Limits are symmetric about centre, so the usable range is the SMALLER
+side of each axis. If the two sides differ a lot, the mount's
+mechanical centre is not where the servo thinks centre is, and
+re-seating the servo horn would recover the lost travel.
+
+Stop the control server before running it; it owns the serial port.
+
 ### Calibration lives in config.py
 
 FOV, dead bands, channels, limits, axis inversion, rate limits. When

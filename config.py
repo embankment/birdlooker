@@ -91,6 +91,23 @@ VOTE_OUTLIER_MIN_VOTERS = 3
 VOTE_OUTLIER_GATE_DEGREES = 20.0
 
 # ---------------------------------------------------------------------
+# Idle behaviour.
+#
+# Without this, whoever clicked last leaves the camera pointing there
+# indefinitely -- walk past tomorrow and it is still staring at the
+# fence. After a quiet spell it eases back to a home position, so the
+# default state of an unattended camera is the view worth having.
+#
+# HOME is in degrees from centre. Set it to wherever the feeder is once
+# the camera is in its final spot.
+# ---------------------------------------------------------------------
+IDLE_RETURN_ENABLED = True
+IDLE_SECONDS = 180.0          # quiet time before heading home
+HOME_PAN = 0.0
+HOME_TILT = 0.0
+HOME_SPEED = 8.0              # slow; nothing is waiting on this move
+
+# ---------------------------------------------------------------------
 # Rate limiting -- a token bucket per client IP.
 #
 # Tuned for LAN use with a few viewers. The June design's public-facing

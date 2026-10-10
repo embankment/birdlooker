@@ -111,8 +111,10 @@ class Camera:
             speed=config.MOVE_SPEED,
         )
         self._target = (0.0, 0.0)
+        self._target_speed = None
         self._generation = 0      # bumped on every new target
         self._moving = False
+        self._last_activity = time.monotonic()
         self._lock = threading.Lock()
         self._wake = threading.Event()
         self._running = True
@@ -122,14 +124,35 @@ class Camera:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
-    def look_at(self, pan, tilt):
-        """Set a new target. Returns the clamped target."""
+    def look_at(self, pan, tilt, speed=None, is_idle_return=False):
+        """Set a new target. Returns the clamped target.
+
+        is_idle_return marks a move the camera decided on by itself, so
+        it does not count as activity -- otherwise going home would
+        reset the idle timer and the camera would head home forever.
+        """
         pan, tilt = self.mover.clamp(pan, tilt)
         with self._lock:
             self._target = (pan, tilt)
+            self._target_speed = speed
             self._generation += 1
+            if not is_idle_return:
+                self._last_activity = time.monotonic()
         self._wake.set()
         return pan, tilt
+
+    def seconds_idle(self):
+        with self._lock:
+            return time.monotonic() - self._last_activity
+
+    def note_activity(self):
+        """Mark viewer activity without moving anything.
+
+        A vote that lands inside the dead zone still means somebody is
+        watching, and should postpone the trip home.
+        """
+        with self._lock:
+            self._last_activity = time.monotonic()
 
     def nudge(self, dpan, dtilt):
         with self._lock:
@@ -164,6 +187,7 @@ class Camera:
                 "moving": self._moving,
                 "pan_limit": config.PAN_LIMIT,
                 "tilt_limit": config.TILT_LIMIT,
+                "idle": round(time.monotonic() - self._last_activity, 1),
             }
 
     def _run(self):
@@ -176,6 +200,7 @@ class Camera:
             with self._lock:
                 target = self._target
                 generation = self._generation
+                speed = self._target_speed
 
             if (abs(target[0] - self.mover.pan) < 0.05
                     and abs(target[1] - self.mover.tilt) < 0.05):
@@ -186,6 +211,7 @@ class Camera:
             try:
                 self.mover.move_to(
                     *target,
+                    speed=speed,
                     should_abort=lambda: self._generation != generation,
                 )
             except Exception as e:
@@ -229,12 +255,31 @@ class Resolver:
         self._thread.start()
 
     def _run(self):
+        went_home = False
         while self._running:
             time.sleep(self.interval)
             try:
                 result = self.accumulator.resolve()
                 if result is not None:
                     self.camera.look_at(*result)
+                    went_home = False
+                    continue
+
+                if not config.IDLE_RETURN_ENABLED or went_home:
+                    continue
+
+                if self.camera.seconds_idle() >= config.IDLE_SECONDS:
+                    # Marked as an idle return so it does not reset the
+                    # idle timer; otherwise the camera would keep
+                    # deciding to go home forever. The latch stops it
+                    # re-issuing the move every tick thereafter.
+                    print(f"[idle] {config.IDLE_SECONDS:.0f}s quiet, "
+                          f"returning to home "
+                          f"({config.HOME_PAN:+.0f}, {config.HOME_TILT:+.0f})")
+                    self.camera.look_at(config.HOME_PAN, config.HOME_TILT,
+                                        speed=config.HOME_SPEED,
+                                        is_idle_return=True)
+                    went_home = True
             except Exception as e:
                 print(f"[resolver] {e}")
 
@@ -358,6 +403,11 @@ class Handler(BaseHTTPRequestHandler):
 
         pan, tilt = self.camera.absolute_from_offset(dpan, dtilt)
         self.accumulator.add(voter, pan, tilt)
+
+        # A click is activity even when the consensus lands inside the
+        # dead zone and nothing moves. Somebody is watching; postpone
+        # the trip home.
+        self.camera.note_activity()
 
         if not config.VOTING_ENABLED:
             # Same path, resolved immediately -- no second code path to
