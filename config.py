@@ -47,7 +47,7 @@ TILT_LIMIT = 45.0
 # camera moves the wrong way; it is a thirty-second empirical test.
 # ---------------------------------------------------------------------
 INVERT_PAN = False
-INVERT_TILT = False
+INVERT_TILT = True    # verified on hardware 2026-10-10
 
 # ---------------------------------------------------------------------
 # Motion.
