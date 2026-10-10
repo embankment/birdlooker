@@ -69,5 +69,13 @@ SERIAL_PORT = "/dev/ttyUSB0"
 # numbers (3 tokens, one per 10 s, escalating timeouts) are stricter;
 # tighten towards those before exposing this to the internet.
 # ---------------------------------------------------------------------
-BUCKET_CAPACITY = 3        # clicks available in a burst
-BUCKET_REFILL_SECONDS = 2.0  # seconds to earn one more click
+# Currently set generously for multi-device testing: tap freely from a
+# lapful of phones without hitting a limit. These are NOT sensible
+# public-facing values -- the June design's numbers for that are 3
+# tokens refilling one per 10 s, with escalating timeouts.
+BUCKET_CAPACITY = 20        # clicks available in a burst
+BUCKET_REFILL_SECONDS = 0.3  # seconds to earn one more click
+
+# Note on testing from several browsers on ONE machine: buckets are
+# keyed by client IP, so every browser and incognito window on the same
+# laptop shares a single bucket. Separate devices get separate buckets.
