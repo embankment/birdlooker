@@ -1,13 +1,87 @@
 # birdlooker — status
 
-Pan/tilt servo control for the bird camera. Last updated 2026-10-05.
+Click-to-look bird camera: a live stream you can click to aim. Last
+updated 2026-10-10.
+
+## Working end to end
+
+Open `http://<pi-ip>:8081/`, click anywhere in the picture, and the
+camera centres on that point. Runs on boot; survives reboots.
+
+Tested with three simultaneous viewers tapping freely: 89% peak CPU
+across four cores, 71.5 C, no throttling.
+
+    ./install_services.sh      # once, as root -- installs systemd units
+    http://<pi-ip>:8081/       # that's it
 
 ## Hardware
 
 - Raspberry Pi 4 (a Pi 5 was tried first; see notes below)
-- Raspberry Pi Camera Module 2 (IMX219)
-- Two servos: pan on **GPIO12**, tilt on **GPIO13**
+- Raspberry Pi Camera Module 2 (IMX219) — camera and ribbon swapped
+  2026-10-09, still needs `--rotation=180`
+- Parallax Servo Controller USB (#28823) on `/dev/ttyUSB0`
+- Two servos: pan on PSC **channel 0**, tilt on **channel 1**
 - OS: Bookworm or later (pip is externally-managed)
+
+## Running as services
+
+`install_services.sh` writes two independent systemd units:
+
+    birdlooker-stream    pi-webrtc, video on 8080
+    birdlooker-control   click server and viewer page on 8081
+
+Deliberately not ordered against each other — either can restart
+without disturbing the other, and the page reports "no stream" by
+itself if pi-webrtc is down. `Restart=always` with `RestartSec=5`
+covers the USB serial adapter not being enumerated yet at boot, which
+is the common cold-start failure. `StartLimitIntervalSec=0` stops
+systemd giving up permanently; an unattended camera sitting in failed
+state is worse than one still retrying.
+
+    systemctl status birdlooker-stream birdlooker-control
+    journalctl -u birdlooker-control -f
+    sudo systemctl restart birdlooker-control   # after editing config.py
+
+The run user needs to be in `dialout` (serial) and `video` (camera);
+the installer checks and tells you if not.
+
+## Click-to-look
+
+`control_server.py` serves the viewer page and takes clicks;
+`static/index.html` is the page.
+
+**Why a separate server at all:** WHEP carries no DataChannel.
+pi-webrtc supports two-way messaging only under `--use-mqtt` or
+`--use-livekit`, so clicks cannot ride the video connection. Moving to
+LiveKit later would remove this whole second channel.
+
+Serving our own page from the Pi also killed the mixed-content prompt —
+page and stream are now the same scheme and host, so it works in any
+browser rather than Chrome-with-permission.
+
+Click mapping uses `atan`, not linear interpolation of the FOV: a
+camera is a pinhole projection, so linear undershoots by about 1.5 deg
+at a quarter-frame out.
+
+Motion is owned by one thread, since the serial port is not
+thread-safe and HTTP handlers are concurrent. A new target supersedes
+the one in flight rather than queueing — click twice and the camera
+abandons the first move for the second.
+
+Rate limiting is a token bucket per IP, charged only after validation.
+**Currently set generously for testing** (20 clicks, one back every
+0.3 s). Public-facing values from the June design are much stricter.
+Note buckets are keyed by IP, so several browsers on one laptop share
+one bucket.
+
+### Calibration lives in config.py
+
+FOV, dead bands, channels, limits, axis inversion, rate limits. When
+servos or geometry change, that file is the only one to edit.
+
+Axis inversion was determined empirically — **both axes are inverted**.
+Not predictable from first principles with the camera mounted upside
+down and corrected in software.
 
 ## PSC-USB (#28823) — WORKING as of 2026-10-08
 
@@ -80,10 +154,10 @@ Measured with `deadband.py`. The asymmetry was the useful part: tilt is
 as good as the hardware allows, so the controller, wiring and protocol
 are all fine and exactly one servo is tired.
 
-**After swapping a servo, re-run `deadband.py` and update the `DEADBAND`
-dict at the top of `motion.py`.** That is the only change needed; a new
-servo measuring 1 or 2 just makes the motion finer. Beefier servos are
-planned for channel 0.
+**After swapping a servo, re-run `deadband.py` and update `DEADBAND` in
+`config.py`.** That is the only change needed; a new servo measuring 1
+or 2 just makes the motion finer. Beefier servos are planned for
+channel 0.
 
 ### Why the controller's ramp was abandoned
 
@@ -114,49 +188,95 @@ exactly 4 units. Slow panning works fine, just at 0.73 deg granularity.
 
 ### Still open
 
-- Does the firmware ramp look better or worse than the old Python
-  ease-out on camera? Linear-rate vs ease-out. `--ramp N` to taste.
-- RSP byte order is decoded low-byte-first to match the command, but
-  that has not been confirmed against a known position.
+- **RSP byte order is unverified.** Decoded low-byte-first to match the
+  command, but never confirmed against a known position. Nothing in the
+  current motion path reads it, so it is harmless today — and a trap for
+  whoever next reaches for position readback.
+- Easing is largely wasted on pan right now. `smoothstep` computes a
+  gentle acceleration curve and 4-unit quantization rounds most of it
+  away; linear would look near-identical on that axis today. Left in
+  because it matters again with better servos.
 
-## Earlier: direct GPIO approach (superseded)
+## Next steps
 
-**Working:** servos move under `servo_test.py` using gpiozero/lgpio
-software PWM. Motion confirmed, but with visible jitter.
+Ordered by what unblocks what. Decided 2026-10-10.
 
-**In progress:** switching to hardware PWM to reduce jitter.
+1. ~~Reboot survivability~~ — done, see "Running as services".
+2. **Pi 5 move.** Deferred but likely. Note it has NO hardware H.264
+   encoder, so encoding stays in software; its faster CPU probably wins
+   but that deserves a `monitor.sh` run rather than an assumption. A fan
+   is planned, which addresses the thermal headroom question below.
+3. **LiveKit SFU.** The Pi publishes once and the SFU fans out, so Pi
+   load stops scaling with viewers. Clicks move onto the LiveKit
+   DataChannel, deleting the separate HTTP control path.
+4. **Aggregator on the VPS.** Vote accumulation, rate limiting and
+   viewer verification move off the Pi, which then needs no inbound
+   exposure at all. With an SFU the June design's heartbeat check gets
+   better: the SFU knows its participants, so a voter can be verified
+   against real subscription state rather than an inferred heartbeat.
+5. **Vote accumulator.** Last, because tuning its constants needs
+   several simultaneous real strangers.
 
-### Exact next step
+`Camera.look_at()` is the seam for 4 and 5 — that is where "aggregator
+says go here" replaces "HTTP handler says go here". Everything
+downstream (motion, quantization, FOV mapping, inversion) is unaffected.
 
-```bash
-cd ~/birdlooker
-python3 -m venv --system-site-packages venv
-venv/bin/pip install rpi-hardware-pwm
-venv/bin/python servo_test.py --hw
-```
+Independent of all the above: the beefier servos, whenever they arrive.
 
-`sudo venv/bin/python ...` if the sysfs PWM nodes refuse permission.
+### Considered and set aside
 
-Not yet verified: whether hardware PWM actually reduces the jitter.
-If it doesn't, suspect the servos themselves or the power supply
-rather than the pulse source — see "Open questions".
+**Twitch / YouTube Live.** Feasible for watching, not for clicking.
+Low-latency modes still run 2-5 seconds, so you would be clicking where
+a bird was several seconds ago. Not mutually exclusive with the SFU
+though: LiveKit egress can push the same room to RTMP, giving WebRTC to
+people who want to steer and a CDN to people who just want a bird
+channel — on one encode. Worth revisiting after step 3.
+
+## Measurements
+
+Peak with three simultaneous viewers, all clicking, 1600x1200 @ 30fps:
+
+    total CPU   89%  (of 400% across 4 cores)
+    temperature 71.5 C      throttling: none
+
+Roughly 3.5 of 4 cores. A fourth viewer would plausibly tip it; the
+failure mode is WebRTC quietly scaling resolution down for everyone
+rather than anything crashing. Thermal headroom is ~10 C before the Pi
+4 throttles around 80-85 C — fine indoors in October, less certain in
+an enclosure in July. `monitor.sh` reports throttling explicitly
+because the symptom otherwise (frames dropping while CPU looks healthy)
+is baffling.
+
+Headroom options if needed before the SFU lands: 1280x960 is ~40% fewer
+pixels at full FOV and still a multiple of 64.
 
 ## Files
 
-- `servo_test.py` — sweep phase, then eased random targets.
-  `--hw` selects the hardware PWM backend; default is gpiozero.
-- `hwservo.py` — `HardwareServo`, a drop-in `AngularServo` replacement
-  built on `rpi-hardware-pwm`.
+Current:
 
-## Motion model
+- `config.py` — all calibration. The file to edit when hardware changes.
+- `psc.py` — Parallax PSC-USB serial driver.
+- `motion.py` — coordinated, dead-band-quantized motion.
+- `control_server.py` + `static/index.html` — click-to-look.
+- `install_services.sh` — systemd units.
+- `monitor.sh` — CPU, temperature and throttling with peak tracking.
+- `deadband.py`, `pan_demo.py`, `smooth_test.py`, `psc_probe.py`,
+  `psc_test.py` — calibration and diagnostics.
 
-Each tick (20 ms), step `EASE` (0.08) of the remaining distance toward
-the target, clamped to `SPEED_CAP` (40 deg/sec). The fraction gives
-deceleration into the target; the cap protects the servo when a target
-jumps a long way. Both are in `servo_test.py`.
+Superseded, kept for reference:
 
-This is the model intended for the multi-viewer click-voting layer
-later: the vote accumulator sets a target, this moves toward it.
+- `servo_test.py`, `hwservo.py` — the direct-GPIO era, before the PSC.
+
+## Earlier: direct GPIO approach (superseded by the PSC)
+
+Servos driven straight from GPIO12/13, first with gpiozero/lgpio
+software PWM and then with `rpi-hardware-pwm` via `dtoverlay=pwm-2chan`.
+Abandoned for the PSC-USB: jitter-free pulses, simpler wiring, and it
+frees the hat connector.
+
+Its motion model — step a fraction of the remaining distance each tick,
+clamped to a speed cap — is the ancestor of what `motion.py` does now,
+and the gotchas below are still worth keeping.
 
 ## Gotchas found the hard way
 
@@ -191,11 +311,19 @@ pi-webrtc --camera=libcamera:0 --uid=home-pi-5 --fps=30 \
   --no-audio --rotation=180
 ```
 
-Viewer: https://tzuhuantai.github.io/webrtc-player/demo/ , adapter on
-WHEP, URL `http://<pi-ip>:8080` (bare, no path). Chrome must be allowed
-local network access; other browsers block it as mixed content.
+`start_stream.sh` runs exactly this; the systemd unit calls that script,
+so the arguments have one home.
 
-- At 1600x1200 / 30 fps on the Pi 4, load is ~94% spread over 4 cores.
+For checking the stream alone, without the control server:
+https://tzuhuantai.github.io/webrtc-player/demo/ , adapter on WHEP, URL
+`http://<pi-ip>:8080` (bare, no path). That page is https reaching into
+an http device, so Chrome prompts for local network access and other
+browsers refuse — which is exactly why the viewer page is served from
+the Pi instead.
+
+- At 1600x1200 / 30 fps on the Pi 4, one viewer is ~94% of a core-hour
+  budget spread over 4 cores; see Measurements for the three-viewer
+  figure.
 - **Width must be a multiple of 64** or libcamera's stride padding
   trips "Stride is not equal to width". 1640 fails; 1600 works.
 - 1640x1232 and 1600x1200 use the full sensor FOV; 1920x1080 is a
@@ -203,16 +331,18 @@ local network access; other browsers block it as mixed content.
 - The Pi 5 has no hardware H.264 encoder — do not pass `--hw-accel`
   there. The Pi 4 does.
 
-## Open questions
+## Odds and ends worth keeping
 
-- Does hardware PWM actually fix the jitter? If jitter persists while a
-  servo is *parked* at a target, the pulse source isn't the cause —
-  look at the servos or the supply. Jitter only during motion points
-  back at the pulse train.
-- Are the servos on their own supply with ground tied to the Pi?
-  Running them off the Pi's 5V rail gets worse once the camera streams.
-- A PCA9685 I2C breakout is the fallback if neither PWM path is clean
-  enough, and the answer if the servo count grows past two.
-- Mirroring: `--rotation` handles 0/90/180/270, but there is no hflip
-  in pi-webrtc. Viewer-side CSS `scaleX(-1)` or a v4l2loopback virtual
+- The jitter question is settled: it was the firmware ramp's tick rate
+  plus one worn servo, not the pulse source. See "Servo dead bands".
+- Servos must have their own supply with ground tied to the Pi. Running
+  them off the Pi's 5V rail gets worse once the camera streams.
+- A PCA9685 I2C breakout is the fallback if the PSC ever disappoints,
+  and the answer if the servo count grows past two.
+- Mirroring: `--rotation` handles 0/90/180/270, but there is no hflip in
+  pi-webrtc. Viewer-side CSS `scaleX(-1)` or a v4l2loopback virtual
   camera are the options if a true mirror is ever needed.
+- `rpicam-jpeg -o test.jpg -t 2000 --rotation 180` is the quickest
+  check that the camera itself works, independent of the streaming
+  stack. A stream that comes up black looks the same whether the fault
+  is the camera or the encoder.
