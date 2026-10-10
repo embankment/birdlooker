@@ -27,24 +27,19 @@ RAMP_IMMEDIATE = 0
 
 DEFAULT_SPEED = 25.0     # degrees per second at the fastest part of a move
 
-# ---------------------------------------------------------------------
-# PER-SERVO DEAD BAND -- re-measure with deadband.py after swapping a
-# servo, and update the numbers here. That is the only change needed.
+# Per-servo dead band, in PSC units (1 unit = 2 us). A servo ignores any
+# step smaller than this: sending one does not move it, the error
+# accumulates silently, and the servo eventually lurches at an interval
+# we do not control. Quantizing to the dead band gives the same number
+# of physical movements, evenly spaced and on our schedule.
 #
-# Measured 2026-10-09, in PSC units (1 unit = 2 us of pulse width):
-#   channel 0 (pan):  4 units  -- worn, 0.73 deg granularity
-#   channel 1 (tilt): 1 unit   -- healthy, 0.18 deg (hardware limit)
-#
-# A servo ignores any step smaller than its dead band. Sending one
-# anyway does not move it; the error accumulates silently until it
-# crosses the band and the servo lurches, at intervals we do not
-# control. Quantizing to the dead band gives the same number of
-# physical movements, evenly spaced and on our schedule instead.
-#
-# Lower is better. 1 is the hardware floor, so a new servo measuring 1
-# or 2 needs no other change -- the motion simply gets finer.
-# ---------------------------------------------------------------------
-DEADBAND = {0: 4, 1: 1}
+# The measured values live in config.py -- that is the file to edit when
+# a servo is swapped.
+try:
+    from config import DEADBAND
+except ImportError:          # usable standalone, e.g. from a test
+    DEADBAND = {0: 4, 1: 1}
+
 DEFAULT_DEADBAND = 1
 
 
@@ -132,7 +127,8 @@ class Mover:
         """Go immediately, no interpolation."""
         self._write(*self.clamp(pan, tilt), force=True)
 
-    def move_to(self, pan, tilt, speed=None, on_step=None):
+    def move_to(self, pan, tilt, speed=None, on_step=None,
+                should_abort=None):
         """Travel to (pan, tilt) in a straight line, eased at both ends.
 
         Duration comes from the LARGER of the two axis distances, and
@@ -161,6 +157,13 @@ class Mover:
 
         t0 = time.monotonic()
         for i in range(1, steps + 1):
+            # Checked every tick so a newly clicked target takes over
+            # immediately rather than waiting for this move to finish.
+            # We stop where we are; the caller starts the next move from
+            # here, which is why self.pan/self.tilt must stay current.
+            if should_abort is not None and should_abort():
+                return time.monotonic() - t0
+
             frac = self.ease(i / steps)
             self._write(start_pan + dpan * frac,
                         start_tilt + dtilt * frac)
