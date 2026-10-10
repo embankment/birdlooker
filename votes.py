@@ -22,14 +22,22 @@ The model, from the June design:
     drifts by fractions of a degree forever and the camera never
     settles.
 
-Consensus is a weighted MEDIAN, not a mean. The original sketch said
-mean, which turns out to be the wrong tool: three viewers clicking a
-bird at -10 degrees and one clicking the far corner at +50 average to
-+5, pointing at nothing anybody wanted. One outlier drags everyone, and
-on a public camera that outlier is the whole threat model. The median
-ignores it and lands on -10. Where viewers broadly agree -- the normal
-case, everyone watching the same bird -- the two give near-identical
-answers, so robustness costs nothing.
+Consensus is a weighted mean, with outlier rejection once there are
+enough voters to tell an outlier from a disagreement.
+
+Getting here took two wrong turns. A plain mean lets one person
+clicking the far corner drag everybody: three viewers on a bird at -10
+plus one at +50 averages to +5, pointing at nothing anyone wanted. So
+the first fix was a weighted median -- which is robust with many voters
+and degenerate with few. A median over two samples lands wherever
+cumulative weight crosses half, so whichever vote is marginally fresher
+takes the whole thing. With real clicks, never simultaneous, that is
+"last tap wins" with extra steps.
+
+So: mean, which blends the way people expect, plus outlier rejection
+that only engages at OUTLIER_MIN_VOTERS or more. Below that there is no
+honest way to tell a troll from someone who simply wants to look
+somewhere else, and pretending otherwise just makes two viewers fight.
 """
 
 import math
@@ -92,13 +100,20 @@ class VoteAccumulator:
     """
 
     def __init__(self, decay_seconds=4.0, max_age_seconds=12.0,
-                 dead_zone_degrees=1.5):
+                 dead_zone_degrees=1.5,
+                 outlier_min_voters=4, outlier_gate_degrees=20.0):
         # Weight halves roughly every decay_seconds * ln(2). Shorter
         # makes the camera more responsive to whoever clicked last;
         # longer makes it more consensual and more sluggish.
         self.decay = decay_seconds
         self.max_age = max_age_seconds
         self.dead_zone = dead_zone_degrees
+
+        # Outlier rejection needs enough votes to distinguish "one troll"
+        # from "two people who disagree". Below this many voters, every
+        # vote counts.
+        self.outlier_min_voters = outlier_min_voters
+        self.outlier_gate = outlier_gate_degrees
 
         self._votes = {}          # voter id -> Vote
         self._lock = threading.Lock()
@@ -139,19 +154,22 @@ class VoteAccumulator:
             if not self._votes:
                 return None
 
-            pan_pairs = []
-            tilt_pairs = []
+            weighted = []
             for vote in self._votes.values():
                 w = math.exp(-(now - vote.at) / self.decay)
-                if w <= 0.0:
-                    continue
-                pan_pairs.append((vote.pan, w))
-                tilt_pairs.append((vote.tilt, w))
+                if w > 0.0:
+                    weighted.append((vote.pan, vote.tilt, w))
 
-            pan = weighted_median(pan_pairs)
-            tilt = weighted_median(tilt_pairs)
-            if pan is None or tilt is None:
+            if not weighted:
                 return None
+
+            kept = self._reject_outliers(weighted)
+            total = sum(w for _, _, w in kept)
+            if total <= 0.0:
+                return None
+
+            pan = sum(p * w for p, _, w in kept) / total
+            tilt = sum(t * w for _, t, w in kept) / total
 
             if self._last_resolved is not None:
                 dp = pan - self._last_resolved[0]
@@ -161,6 +179,43 @@ class VoteAccumulator:
 
             self._last_resolved = (pan, tilt)
             return pan, tilt
+
+    def _reject_outliers(self, weighted):
+        """Drop votes far from the crowd, once there is a crowd.
+
+        The reference point is the weighted median, which is the whole
+        reason the median is still here: it is a robust centre even when
+        an outlier is present, unlike the mean it is protecting.
+
+        Rejection requires a strict majority of VOTERS, counted by head
+        rather than by weight. Weight decides where to aim; it must not
+        decide whose vote is legitimate. Weighing the majority test
+        meant an even two-against-two split resolved to whichever pair
+        had clicked marginally more recently -- their decay advantage
+        pushed them past half the weight, and the other pair was
+        discarded as outliers. By head count 2 is not a majority of 4,
+        so that split averages, while 2 of 3 and 3 of 4 still reject.
+        """
+        if len(weighted) < self.outlier_min_voters:
+            return weighted
+
+        med_pan = weighted_median([(p, w) for p, _, w in weighted])
+        med_tilt = weighted_median([(t, w) for _, t, w in weighted])
+        if med_pan is None or med_tilt is None:
+            return weighted
+
+        scored = []
+        for pan, tilt, w in weighted:
+            distance = math.hypot(pan - med_pan, tilt - med_tilt)
+            scored.append((distance, pan, tilt, w))
+
+        kept = [(p, t, w) for d, p, t, w in scored if d <= self.outlier_gate]
+
+        # Strict majority by head count: 2 of 3 and 3 of 4 reject, 2 of
+        # 4 does not.
+        if len(kept) * 2 <= len(scored):
+            return weighted
+        return kept
 
     # -- introspection -------------------------------------------------
 

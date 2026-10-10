@@ -79,6 +79,17 @@ VOTE_MAX_AGE_SECONDS = 12.0   # votes older than this are dropped
 VOTE_DEAD_ZONE_DEGREES = 1.5  # ignore consensus shifts smaller than this
 VOTE_RESOLVE_INTERVAL = 0.2   # seconds between consensus recalculations
 
+# Outlier rejection only engages at this many voters. Below it there is
+# no honest way to tell a troll from someone who simply wants to look
+# elsewhere, and trying makes two viewers fight instead of averaging.
+#
+# Three is the lowest workable value: dropping one vote of three
+# discards 33% of the weight, inside the 50% guard in _reject_outliers,
+# so a 2-vs-1 split resolves to the two. At two voters it stays off and
+# they average, which is what people expect when they tap together.
+VOTE_OUTLIER_MIN_VOTERS = 3
+VOTE_OUTLIER_GATE_DEGREES = 20.0
+
 # ---------------------------------------------------------------------
 # Rate limiting -- a token bucket per client IP.
 #

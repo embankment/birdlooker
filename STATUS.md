@@ -90,16 +90,44 @@ instead of each click superseding the last.
 - A **dead zone** (1.5 deg) stops the camera fidgeting over consensus
   drift of fractions of a degree.
 
-**Consensus is a weighted MEDIAN, not a mean.** The June sketch said
-mean; that is the wrong tool. Three viewers on a bird at -10 and one
-clicking the far corner at +50 average to +5 — pointing at nothing
-anybody wanted. On a public camera that outlier is the entire threat
-model. The median lands on -10 and ignores them. Where viewers broadly
-agree the two give near-identical answers, so the robustness is free.
+**Consensus is a weighted mean with outlier rejection**, and getting
+there took two wrong turns worth recording.
 
-Verified end to end with simulated viewers: majority wins while an
-outlier is ignored, two opposed viewers blend to the midpoint, and a
-lone viewer still gets direct control.
+A plain mean lets one person drag everyone: three viewers on a bird at
+-10 plus one clicking the far corner at +50 averages to +5, pointing at
+nothing anybody wanted. On a public camera that outlier is the whole
+threat model.
+
+The first fix was a weighted median. Robust with many voters,
+degenerate with few: over two samples it lands wherever cumulative
+weight crosses half, so whichever vote is marginally fresher takes the
+whole thing. With real clicks -- never simultaneous -- that is "last
+tap wins" with extra steps. Caught only by testing with realistic
+timing; the original test used identical timestamps, which humans
+cannot produce.
+
+So: mean, plus outlier rejection that engages at
+`VOTE_OUTLIER_MIN_VOTERS` (3) and discards votes more than
+`VOTE_OUTLIER_GATE_DEGREES` (20) from the weighted median.
+
+**Rejection requires a strict majority by HEAD COUNT, not weight.**
+Weight decides where to aim; it must not decide whose vote is
+legitimate. Testing the majority by weight meant an even two-against-two
+split resolved to whichever pair had clicked marginally more recently --
+their decay advantage pushed them past half the weight and the other
+pair was discarded as outliers. By head count 2 is not a majority of 4,
+so that split averages, while 2 of 3 and 3 of 4 still reject.
+
+### Voter identity is per browser tab, not per IP
+
+Keying votes on IP silently merged two browsers on one laptop into a
+single voter, which looked exactly like voting being broken. The page
+generates a per-tab id in sessionStorage and sends it with each click.
+
+It is client-supplied and therefore forgeable, so it decides vote
+identity only. Rate limiting stays on IP, which is what actually
+protects the servos. Real identity arrives with the SFU, which knows
+who is genuinely subscribed.
 
 A resolver thread recomputes consensus every 200 ms, separate from the
 motion thread. Motion is about getting somewhere smoothly; this is
@@ -114,6 +142,18 @@ position when the click *arrives*, but the frame the viewer clicked was
 captured ~200 ms earlier. Negligible for ordinary clicks, larger while
 the camera is moving fast. Frame timestamps would fix it if it ever
 matters.
+
+### Stream resolution changes mid-flight
+
+WebRTC scales the picture down under CPU or network pressure, and it
+does so on the SENDING side -- so every viewer's image changes size at
+the same moment, which is what makes it look like a client bug when it
+is not. `--no-adaptive` on pi-webrtc pins the resolution, at the cost
+of dropping frames instead when the Pi is loaded.
+
+The viewer page handles it either way: the stage re-matches the video's
+aspect ratio on the `resize` event, not just `loadedmetadata`, so the
+click overlay cannot drift out of step with the picture.
 
 ### Calibration lives in config.py
 

@@ -146,6 +146,25 @@ const votersEl= document.getElementById('voters');
 
 const STREAM_URL = `http://${location.hostname}:8080`;
 
+// Vote identity. Per TAB, not per machine: two browsers on one laptop
+// are two people as far as steering is concerned, and keying votes on
+// IP silently merged them into one. sessionStorage is per-tab and
+// survives a reload, which is exactly the lifetime we want.
+//
+// Forgeable, and that is fine -- it only decides vote identity. Rate
+// limiting stays on IP, which is what protects the servos.
+const CLIENT_ID = (() => {
+  const fresh = () =>
+    Math.random().toString(36).slice(2) + Date.now().toString(36);
+  try {
+    let id = sessionStorage.getItem('birdlooker-client');
+    if (!id) { id = fresh(); sessionStorage.setItem('birdlooker-client', id); }
+    return id;
+  } catch (e) {
+    return fresh();   // private window, blocked storage: a fresh id is fine
+  }
+})();
+
 function setStatus(text, cls) {
   statusEl.textContent = text;
   statusEl.className = 'status' + (cls ? ' ' + cls : '');
@@ -170,15 +189,23 @@ async function connect() {
 
   pc.ontrack = (e) => { video.srcObject = e.streams[0]; };
 
-  // Match the stage to the stream's real dimensions. Until this fires
-  // the stage uses the 4/3 guess from CSS; afterwards the stage, the
-  // video and the overlay are exactly the same rectangle, which is what
-  // makes the click mapping correct.
-  video.addEventListener('loadedmetadata', () => {
+  // Match the stage to the stream's real dimensions, so the stage, the
+  // video and the overlay are exactly the same rectangle -- which is
+  // what makes the click mapping correct.
+  //
+  // Both events matter. loadedmetadata fires once at the start;
+  // 'resize' fires when the resolution CHANGES mid-stream, which it
+  // does: WebRTC scales the picture down under CPU or network
+  // pressure, on the sending side, so every viewer sees it at once.
+  // Without the resize handler a rescale to a different aspect ratio
+  // would silently desynchronise the overlay from the picture.
+  const matchVideo = () => {
     if (video.videoWidth && video.videoHeight) {
       stage.style.aspectRatio = `${video.videoWidth} / ${video.videoHeight}`;
     }
-  });
+  };
+  video.addEventListener('loadedmetadata', matchVideo);
+  video.addEventListener('resize', matchVideo);
 
   pc.oniceconnectionstatechange = () => {
     const s = pc.iceConnectionState;
@@ -242,7 +269,7 @@ stage.addEventListener('click', async (e) => {
     const res = await fetch('/look', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ x: nx, y: ny }),
+      body: JSON.stringify({ x: nx, y: ny, client: CLIENT_ID }),
     });
     if (res.status === 429) {
       const body = await res.json();
@@ -280,7 +307,7 @@ document.getElementById('center').addEventListener('click', (e) => {
   fetch('/look', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ x: 0.5, y: 0.5 }),
+    body: JSON.stringify({ x: 0.5, y: 0.5, client: CLIENT_ID }),
   }).catch(() => flash('control server unreachable'));
 });
 

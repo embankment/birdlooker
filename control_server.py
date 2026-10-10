@@ -340,8 +340,24 @@ class Handler(BaseHTTPRequestHandler):
         # Record a vote for an absolute direction rather than moving
         # directly, so simultaneous viewers blend instead of each click
         # cancelling the last.
+        #
+        # Vote identity is the client's own id, NOT its IP. Several
+        # browser windows on one laptop, or two people behind one home
+        # router, are genuinely separate viewers and should each get a
+        # vote; keying on IP silently merged them into one, which looked
+        # exactly like voting being broken.
+        #
+        # The id is client-supplied and therefore forgeable, so it is
+        # used only for vote identity. Rate limiting stays on IP, which
+        # is what actually protects the servos. Real identity arrives
+        # with the SFU, which knows who is genuinely subscribed.
+        voter = payload.get("client") if isinstance(payload, dict) else None
+        if not isinstance(voter, str) or not voter.strip():
+            voter = self.client_address[0]
+        voter = voter.strip()[:64]
+
         pan, tilt = self.camera.absolute_from_offset(dpan, dtilt)
-        self.accumulator.add(self.client_address[0], pan, tilt)
+        self.accumulator.add(voter, pan, tilt)
 
         if not config.VOTING_ENABLED:
             # Same path, resolved immediately -- no second code path to
